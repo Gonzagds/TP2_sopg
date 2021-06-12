@@ -6,6 +6,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
+#include <netdb.h>
 #include <unistd.h>
 #include <signal.h>
 #include <pthread.h>
@@ -16,8 +17,8 @@
 #define TCP_PORT		"10000"
 
 void* serial_thread(void* msg);
-void* tcp_thread(void* msg);
 void sigint_handler(int sig); /* prototype */
+void procesa_trama_serie(char* buf);
 
 pthread_t serial_thread_hand;
 
@@ -26,9 +27,8 @@ void sigint_handler(int sig)
 {
 	if(sig == SIGINT || sig == SIGTERM)
 	{
-		pthread_cancel(serial_thread);		
-	}
-	
+		pthread_cancel(serial_thread_hand);		
+	}	
 }
 
 int main(void)
@@ -36,7 +36,7 @@ int main(void)
 	int ret;
 	struct sigaction sa;
 	struct addrinfo hints;
-	struct addrinfo result;
+	struct addrinfo *result;
 	int sock_fd;
 
 	
@@ -61,7 +61,7 @@ int main(void)
 	
 	if (r != 0)
 	{
-		fprintf(stderr,"getaddrinfo:%s",gai_strerror(r));
+		perror("error getting address info");
 		exit(1);
 	}
 
@@ -134,8 +134,7 @@ int main(void)
 
 	}
 	//esperamos la finalización de los hilos que lanzamos
-	pthread_join(serial_thread, NULL);
-	pthread_join(tcp_thread, NULL);
+	pthread_join(serial_thread_hand,NULL);	
 	exit(EXIT_SUCCESS);
 	return 0;
 }
