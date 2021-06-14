@@ -23,17 +23,14 @@ int procesa_trama_serie(char* buf, int len, int* offset);
 int procesa_trama_tcp(char* buf, int len,int* states, int* offset);
 
 pthread_t serial_thread_hand;
-int listener_fd, connected_fd;
+_Atomic int flag_end;
 
 
 void sigint_handler(int sig)
 {
 	if(sig == SIGINT || sig == SIGTERM)
 	{
-		pthread_cancel(serial_thread_hand);
-		close(listener_fd);
-		close(connected_fd);
-		serial_close();		
+		flag_end = 1;
 	}	
 }
 
@@ -41,7 +38,7 @@ int main(void)
 {
 	int ret;
 	struct sigaction sa;
-	
+	int listener_fd, connected_fd;
 
 	printf("Inicio Serial Service\r\n");
 	printf("Id Proceso %u...\r\n", getpid());
@@ -70,6 +67,7 @@ int main(void)
 		exit(1);
 	}
 
+	flag_end = 0;
 	sigset_t set;
 	sigemptyset(&set);
 	sigaddset(&set, SIGINT);
@@ -128,9 +126,21 @@ int main(void)
 		//se corre el puntero en la cantidad de bytes eliminados 
 		//por procesa_trama
 		ptr -= rec_bytes;
+
+		//flag de finalización hilo serie
+		if(flag_end)
+			break;
 	}
+
+
+	pthread_cancel(serial_thread_hand);
 	//esperamos la finalización de los hilos que lanzamos
 	pthread_join(serial_thread_hand,NULL);	
+
+	close(listener_fd);
+	close(connected_fd);
+	serial_close();
+
 	exit(EXIT_SUCCESS);
 	return 0;
 }
@@ -211,7 +221,6 @@ void* serial_thread(void* msg)
 		if(num_bytes > 0)
 		{
 			printf("%s",buf_in);
-			printf("bytes entrantes %i \n",num_bytes);
 		}
 			
 
@@ -237,19 +246,20 @@ void* serial_thread(void* msg)
 		usleep(SERIAL_SLEEP);
 	}
 
+	flag_end = 1;
+
 	pthread_exit(NULL);
 	return NULL;
 }
 
 
 /*
-buf buffer a proceasar
-len largo del buffer
-states puntero a un array de enteros donde se devolveran los estados a de las salidas
-offset retorna cuanto se corre el buffer
+buf: buffer a proceasar
+len: largo del buffer
+offset: retorna cuanto se corre el buffer al descartar datos procesados
 
 retorna el numero de tecla recibida si hay una trama correcta
-		-1 si no hay trama correcta o entera
+		-1 si no hay trama correcta 
 */
 int procesa_trama_serie(char* buf, int len, int* offset)
 {
@@ -300,8 +310,6 @@ int procesa_trama_serie(char* buf, int len, int* offset)
 	//compruebo largo de cadena
 	if(char_end - buf != (LEN_STRING_CIAA-1))
 	{
-
-		printf("largo incorrecto \n");
 		//cadena de lardo incorrecto
 		//elimino todo lo que esta antes del caracter de fin
 		memcpy(buf, char_end, len - i);
@@ -312,12 +320,10 @@ int procesa_trama_serie(char* buf, int len, int* offset)
 	//verificos valores validos
 	if((buf[14] >= '0' && buf[14] <= '3') )
 	{
-		printf("trama ok \n");
 		ret = (int) (buf[14] - '0');		
 	}
 	else
 	{
-		printf("parametro fuera de rango \n");
 		ret = -1;
 	}
 		
@@ -328,10 +334,10 @@ int procesa_trama_serie(char* buf, int len, int* offset)
 }
 
 /*
-buf buffer a proceasar
-len largo del buffer
-states puntero a un array de enteros donde se devolveran los estados a de las salidas
-offset retorna cuanto se corre el buffer
+buf: buffer a proceasar
+len: largo del buffer
+states: puntero a un array de enteros donde se devolveran los estados a de las salidas
+offset: retorna cuanto se corre el buffer al borrar datos ya procesados
 
 retorna 0 si hay una trama correcta
 		-1 si no hay trama correcta o entera
