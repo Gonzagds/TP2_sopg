@@ -108,7 +108,13 @@ int main(void)
 			rec_bytes = recv(connected_fd, ptr, sizeof(buf_in)-(ptr-buf_in),0);
 
 			if(rec_bytes <= 0)
+			{
+				//loock
+				connected_fd = -1;
+				//unlock
 				break;
+			}
+				
 
 			ptr += rec_bytes;
 			if(ptr-buf_in >= sizeof(buf_in)-1) //ver si falta un -1
@@ -137,9 +143,13 @@ int main(void)
 				break;
 
 		int addr_size = sizeof(struct sockaddr_storage);
-		connected_fd = accept(listener_fd, (struct sockaddr *)&their_addr, &addr_size);
+
+		int aux_fd = accept(listener_fd, (struct sockaddr *)&their_addr, &addr_size);
+		//lock
+		connected_fd = aux_fd;
+		//unlock
 	}
-	
+
 	pthread_cancel(serial_thread_hand);
 	//esperamos la finalización de los hilos que lanzamos
 	pthread_join(serial_thread_hand,NULL);	
@@ -247,8 +257,11 @@ void* serial_thread(void* msg)
 				break;					
 			sprintf(buf_out,":LINE%iTG\n", button);
 			printf("%s",buf_out);
-			//aca deberíamos verificar si se envío toda la trama
-			send(*sock_connect, buf_out, strlen(buf_out), 0);			
+			
+			//lock
+			if(*sock_connect > 0)
+				send(*sock_connect, buf_out, strlen(buf_out), 0);			
+			//unlock	
 		}
 		usleep(SERIAL_SLEEP);
 	}
