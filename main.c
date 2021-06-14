@@ -19,18 +19,21 @@
 void* serial_thread(void* msg);
 void sigint_handler(int sig); /* prototype */
 int establish_connection(int* listener_fd, int* connected_fd);
-int procesa_trama_serie(char* buf, int len);
+int procesa_trama_serie(char* buf, int len, int* offset);
 int procesa_trama_tcp(char* buf, int len,int* states, int* offset);
 
 pthread_t serial_thread_hand;
-
+int listener_fd, connected_fd;
 
 
 void sigint_handler(int sig)
 {
 	if(sig == SIGINT || sig == SIGTERM)
 	{
-		pthread_cancel(serial_thread_hand);		
+		pthread_cancel(serial_thread_hand);
+		close(listener_fd);
+		close(connected_fd);
+		serial_close();		
 	}	
 }
 
@@ -38,9 +41,10 @@ int main(void)
 {
 	int ret;
 	struct sigaction sa;
-	int listener_fd, connected_fd;
+	
 
 	printf("Inicio Serial Service\r\n");
+	printf("Id Proceso %u...\r\n", getpid());
 		
 	sa.sa_handler = sigint_handler;
 	sa.sa_flags = 0; // or SA_RESTART
@@ -113,6 +117,8 @@ int main(void)
 			memset(buf_in,0, sizeof(buf_in));
 		}
 
+		//esto debería estar en un bucle para consumir todas las tramas del buffer
+		//que pudieran llegar juntas
 		if( procesa_trama_tcp(buf_in, sizeof(buf_in), states, &rec_bytes) == 0)
 		{
 			sprintf(buf_out,">OUTS:%u,%u,%u,%u\r\n", states[0],states[1],states[2],states[3]);
@@ -185,22 +191,30 @@ int establish_connection(int* listener_fd, int* connected_fd)
 
 void* serial_thread(void* msg)
 {
-	#define LEN_TEXT sizeof(">TOGGLE STATE:X\r\n")-1
 	int* sock_connect = (int*) msg;
-	char buf_in [LEN_TEXT * 3];
-	char buf_out[LEN_TEXT + 1];
+	char buf_in [100];
+	char buf_out[40];
 	char* ptr = buf_in;
 	int num_bytes = 0;
 	int button;
 
+	printf("inica hilo atención serie\n");
 	memset(buf_in,0, sizeof(buf_in));
-	//aquí procesaremos las tramas entrantes desde EDUCIAA
+	//aquí procesaremos las tramas entra ntes desde EDUCIAA
 	while(1)
 	{
-		num_bytes = serial_receive(ptr,sizeof(buf_in)-(ptr-buf_in));
-		if(num_bytes <= 0)
+		num_bytes = sizeof(buf_in) - (ptr - buf_in);
+
+		num_bytes = serial_receive(ptr,num_bytes);
+		if(num_bytes < 0)
 			break;
-		
+		if(num_bytes > 0)
+		{
+			printf("%s",buf_in);
+			printf("bytes entrantes %i \n",num_bytes);
+		}
+			
+
 		ptr += num_bytes;
 		if(ptr-buf_in >= sizeof(buf_in)-1)
 		{
@@ -208,10 +222,15 @@ void* serial_thread(void* msg)
 			memset(buf_in,0, sizeof(buf_in));
 		}
 
-		while( (button = procesa_trama_serie(buf_in, sizeof(buf_in))) != -1 )
+		while(1)
 		{
-			ptr -= LEN_TEXT;
-			sprintf(buf_out,":LINE%uTG\n", button);
+			button = procesa_trama_serie(buf_in, sizeof(buf_in), &num_bytes);
+			ptr -= num_bytes;
+
+			if(button < 0)
+				break;					
+			sprintf(buf_out,":LINE%iTG\n", button);
+			printf("%s",buf_out);
 			//aca deberíamos verificar si se envío toda la trama
 			send(*sock_connect, buf_out, strlen(buf_out), 0);			
 		}
@@ -222,28 +241,92 @@ void* serial_thread(void* msg)
 	return NULL;
 }
 
-int procesa_trama_serie(char* buf, int len)
-{
-	#define LEN_TEXT sizeof(">TOGGLE STATE:X\r\n")-1
-	int index = 0;
-	char bufaux[20];
-	char* ptr;
 
-	for(index = 0; index < 4 ; index++)
+/*
+buf buffer a proceasar
+len largo del buffer
+states puntero a un array de enteros donde se devolveran los estados a de las salidas
+offset retorna cuanto se corre el buffer
+
+retorna el numero de tecla recibida si hay una trama correcta
+		-1 si no hay trama correcta o entera
+*/
+int procesa_trama_serie(char* buf, int len, int* offset)
+{
+	//012345678901234 5 6
+	//>TOGGLE STATE:X\r\n
+	#define LEN_STRING_CIAA 17 //>TOGGLE STATE:X\r\n
+	char* char_ini;
+	char* char_end;
+	int i;
+	int ret = -1;
+
+	*offset = 0;
+
+	char_ini = NULL;
+	//busco caracter de inicio
+	for(i = 0; i < len ; i++)
 	{
-		sprintf(bufaux,">TOGGLE STATE:%u\r\n",index);
-		
-		if( (ptr = strstr(buf, bufaux)) != NULL)
+		if(*(buf+i) == '>')
 		{
-			//encontrada una trama valida desplazo todo 
-			//el buffer eliminando la trama ya procesada
-			memcpy(buf, ptr + LEN_TEXT, len - (ptr + LEN_TEXT-buf));
-			return index;;
-		}			
+			char_ini = buf + i;
+			break;
+		}
 	}
-	
-	return -1;	
+	if(char_ini == NULL)
+		return -1;
+
+	//elimino todo lo que esta antes del caracter de inicio de ser necesario
+	if(buf != char_ini)
+	{
+		memcpy(buf, char_ini, len - i);
+		*offset += (int) (char_ini - buf);
+	}
+		
+
+	char_end = NULL;
+	//busco caracter de fin desde donde se encontro el de inicio
+	for(i = 0; i < len ; i++)
+	{
+		if(*(buf+i) == '\n')
+		{
+			char_end = buf + i;
+			break;
+		}
+	}
+	if(char_end == NULL)
+		return -1;
+
+	//compruebo largo de cadena
+	if(char_end - buf != (LEN_STRING_CIAA-1))
+	{
+
+		printf("largo incorrecto \n");
+		//cadena de lardo incorrecto
+		//elimino todo lo que esta antes del caracter de fin
+		memcpy(buf, char_end, len - i);
+		*offset += (int) (char_end - buf);
+		return -1;
+	}
+	//faltaria verificar el resto de la cadena
+	//verificos valores validos
+	if((buf[14] >= '0' && buf[14] <= '3') )
+	{
+		printf("trama ok \n");
+		ret = (int) (buf[14] - '0');		
+	}
+	else
+	{
+		printf("parametro fuera de rango \n");
+		ret = -1;
+	}
+		
+	memcpy(buf, char_end, len - i);
+	*offset += (int) (char_end - buf);
+
+	return ret;	
 }
+
 /*
 buf buffer a proceasar
 len largo del buffer
