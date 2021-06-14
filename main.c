@@ -24,6 +24,7 @@ int procesa_trama_tcp(char* buf, int len,int* states, int* offset);
 
 pthread_t serial_thread_hand;
 _Atomic int flag_end;
+pthread_mutex_t my_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 
 void sigint_handler(int sig)
@@ -109,9 +110,9 @@ int main(void)
 
 			if(rec_bytes <= 0)
 			{
-				//loock
+				pthread_mutex_lock (&my_mutex);
 				connected_fd = -1;
-				//unlock
+				pthread_mutex_unlock (&my_mutex);
 				break;
 			}
 				
@@ -145,9 +146,9 @@ int main(void)
 		int addr_size = sizeof(struct sockaddr_storage);
 
 		int aux_fd = accept(listener_fd, (struct sockaddr *)&their_addr, &addr_size);
-		//lock
+		pthread_mutex_lock (&my_mutex);
 		connected_fd = aux_fd;
-		//unlock
+		pthread_mutex_unlock (&my_mutex);
 	}
 
 	pthread_cancel(serial_thread_hand);
@@ -258,10 +259,10 @@ void* serial_thread(void* msg)
 			sprintf(buf_out,":LINE%iTG\n", button);
 			printf("%s",buf_out);
 			
-			//lock
+			pthread_mutex_lock (&my_mutex);
 			if(*sock_connect > 0)
 				send(*sock_connect, buf_out, strlen(buf_out), 0);			
-			//unlock	
+			pthread_mutex_unlock (&my_mutex);	
 		}
 		usleep(SERIAL_SLEEP);
 	}
