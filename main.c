@@ -18,7 +18,7 @@
 
 void* serial_thread(void* msg);
 void sigint_handler(int sig); /* prototype */
-int establish_connection(int* listener_fd, int* connected_fd);
+int establish_connection(int* listener_fd, int* connected_fd, struct sockaddr_storage* their_addr );
 int procesa_trama_serie(char* buf, int len, int* offset);
 int procesa_trama_tcp(char* buf, int len,int* states, int* offset);
 
@@ -39,6 +39,7 @@ int main(void)
 	int ret;
 	struct sigaction sa;
 	int listener_fd, connected_fd;
+	struct sockaddr_storage their_addr;
 
 	printf("Inicio Serial Service\r\n");
 	printf("Id Proceso %u...\r\n", getpid());
@@ -53,7 +54,7 @@ int main(void)
 		exit(1);
 	}
 
-	if(establish_connection(&listener_fd, &connected_fd) ==-1)
+	if(establish_connection(&listener_fd, &connected_fd, &their_addr) ==-1)
 	{
 		perror("Unable to open socket connection");
 		exit(1);
@@ -100,39 +101,45 @@ int main(void)
 	char* ptr = buf_in;
 	int rec_bytes = 0;
 	int states[4];
-	
 	while(1)
 	{
-		rec_bytes = recv(connected_fd, ptr, sizeof(buf_in)-(ptr-buf_in),0);
-
-		if(rec_bytes <= 0)
-			break;
-
-		ptr += rec_bytes;
-		if(ptr-buf_in >= sizeof(buf_in)-1) //ver si falta un -1
+		while(connected_fd != -1)
 		{
-			ptr = buf_in;
-			memset(buf_in,0, sizeof(buf_in));
-		}
+			rec_bytes = recv(connected_fd, ptr, sizeof(buf_in)-(ptr-buf_in),0);
 
-		//esto debería estar en un bucle para consumir todas las tramas del buffer
-		//que pudieran llegar juntas
-		if( procesa_trama_tcp(buf_in, sizeof(buf_in), states, &rec_bytes) == 0)
-		{
-			sprintf(buf_out,">OUTS:%u,%u,%u,%u\r\n", states[0],states[1],states[2],states[3]);
-			
-			serial_send( buf_out, strlen(buf_out));
-		}
-		//se corre el puntero en la cantidad de bytes eliminados 
-		//por procesa_trama
-		ptr -= rec_bytes;
+			if(rec_bytes <= 0)
+				break;
 
-		//flag de finalización hilo serie
+			ptr += rec_bytes;
+			if(ptr-buf_in >= sizeof(buf_in)-1) //ver si falta un -1
+			{
+				ptr = buf_in;
+				memset(buf_in,0, sizeof(buf_in));
+			}
+
+			//esto debería estar en un bucle para consumir todas las tramas del buffer
+			//que pudieran llegar juntas
+			if( procesa_trama_tcp(buf_in, sizeof(buf_in), states, &rec_bytes) == 0)
+			{
+				sprintf(buf_out,">OUTS:%u,%u,%u,%u\r\n", states[0],states[1],states[2],states[3]);
+				
+				serial_send( buf_out, strlen(buf_out));
+			}
+			//se corre el puntero en la cantidad de bytes eliminados 
+			//por procesa_trama
+			ptr -= rec_bytes;
+
+			//flag de finalización hilo serie
+			if(flag_end)
+				break;
+		}
 		if(flag_end)
-			break;
+				break;
+
+		int addr_size = sizeof(struct sockaddr_storage);
+		connected_fd = accept(listener_fd, (struct sockaddr *)&their_addr, &addr_size);
 	}
-
-
+	
 	pthread_cancel(serial_thread_hand);
 	//esperamos la finalización de los hilos que lanzamos
 	pthread_join(serial_thread_hand,NULL);	
@@ -150,11 +157,11 @@ Funcion que encapsula la creación y apertura de la conexión TCP.
 Por ahora solo retorna -1 en error pero se podría hacer un 
 retorno de errores mas completo
 */
-int establish_connection(int* listener_fd, int* connected_fd)
+int establish_connection(int* listener_fd, int* connected_fd, struct sockaddr_storage* their_addr )
 {
 	struct addrinfo hints;
 	struct addrinfo *result;
-	struct sockaddr_storage their_addr;
+	
 	int addr_size;
 
 	memset((void*)&hints, 0, sizeof(hints));
@@ -187,8 +194,8 @@ int establish_connection(int* listener_fd, int* connected_fd)
 		return -1;
 	}
 
-	addr_size = sizeof(their_addr);
-	*connected_fd = accept(*listener_fd, (struct sockaddr *)&their_addr, &addr_size);
+	addr_size = sizeof(struct sockaddr_storage);
+	*connected_fd = accept(*listener_fd, (struct sockaddr *)their_addr, &addr_size);
 
 	if(*connected_fd == -1)
 	{		
